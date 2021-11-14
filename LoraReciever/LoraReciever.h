@@ -1,9 +1,6 @@
 const char* ssid = "MIWIFI_2G_2jJ5";
 const char* pass = "xvFYmqRv";
 
-const int MOIST_SENSOR = 34;
-const int RELAY = 14;
-
 const char* mqtt_ip = "ioticos.org";
 const int mqtt_ip_port = 1883;
 const char* mqtt_ip_user = "d2uNYOZq2J5uL3T";
