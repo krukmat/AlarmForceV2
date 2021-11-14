@@ -27,11 +27,32 @@
 #include "soc/soc.h"           // Disable brownour problems
 #include "soc/rtc_cntl_reg.h"  // Disable brownour problems
 #include "driver/rtc_io.h"
+#include "SerialTransfer.h"
 #include <EEPROM.h>            // read and write from flash memory
 // define the number of bytes you want to access
 #define EEPROM_SIZE 1
+
+#define DEBUG_ESP              //comment out to deactivate debug console
+
+#ifdef DEBUG_ESP
+  #define pDBGln(x) Serial.println(x)
+  #define pDBG(x)   Serial.print(x)
+#else 
+  #define pDBG(...)
+  #define pDBGln(...)
+#endif
  
 RTC_DATA_ATTR int bootCount = 0;
+
+SerialTransfer myTransfer;
+HardwareSerial Comm(1);
+struct img_meta_data{
+  uint16_t counter;
+  uint16_t imSize;
+  uint16_t numLoops;
+  uint16_t sizeLastLoop;
+} ImgMetaData;
+const uint16_t PIXELS_PER_packet = MAX_PACKET_SIZE - sizeof(ImgMetaData);
 
 // Pin definition for CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM     32
@@ -52,11 +73,66 @@ RTC_DATA_ATTR int bootCount = 0;
 #define PCLK_GPIO_NUM     22
  
 int pictureNumber = 0;
+
+void printStructBuf(){
+  pDBG(F("Internal Struct: { "));
+  for (uint16_t k=0; k<sizeof(ImgMetaData); k++){
+    pDBG(myTransfer.packet.txBuff[k]);
+    if (k<(sizeof(ImgMetaData)-1))
+      pDBG(F(", "));
+    else
+      pDBGln(F(" }"));
+  }
+}
+
+void printBuf(){
+  pDBG(F("Pixel Values: { "));
+  for (uint16_t k=8; k<MAX_PACKET_SIZE; k++){
+    pDBG(myTransfer.packet.txBuff[k]);
+    if (k < (MAX_PACKET_SIZE - 1))
+      pDBG(F(", "));
+    else
+      pDBGln(F(" }"));
+  }
+  pDBGln();
+}
+
+void stuffPixels(const uint8_t * pixelBuff, const uint16_t &bufStartIndex, const uint16_t &txStartIndex, const uint16_t &len){
+  uint16_t txi = txStartIndex;
+  for (uint16_t i=bufStartIndex; i<(bufStartIndex + len); i++)  {
+    myTransfer.packet.txBuff[txi] = pixelBuff[i];
+    txi++;
+  }
+}
+void sendPicture(camera_fb_t* fb){
+  uint16_t startIndex = 0;
+  ImgMetaData.imSize       = fb->len;                             //sizeof(myFb);
+  ImgMetaData.numLoops     = (fb->len / PIXELS_PER_packet) + 1;   //(sizeof(myFb)/PIXELS_PER_packet) + 1; 
+  ImgMetaData.sizeLastLoop = fb->len % PIXELS_PER_packet;         //(sizeof(myFb)%PIXELS_PER_packet);
+
+  for(ImgMetaData.counter=1; ImgMetaData.counter<=ImgMetaData.numLoops; ImgMetaData.counter++){
+    myTransfer.txObj(ImgMetaData, sizeof(ImgMetaData));
+    stuffPixels(fb->buf, startIndex, sizeof(ImgMetaData), PIXELS_PER_packet);  
+    myTransfer.sendData(MAX_PACKET_SIZE);
+     
+    pDBGln(F("Sent:"));
+    pDBG(F("img.counter: "));      pDBGln((uint16_t)((myTransfer.packet.txBuff[1] << 8) | myTransfer.packet.txBuff[0]));
+    pDBG(F("img.imSize: "));       pDBGln((uint16_t)((myTransfer.packet.txBuff[3] << 8) | myTransfer.packet.txBuff[2]));
+    pDBG(F("img.numLoops: "));     pDBGln((uint16_t)((myTransfer.packet.txBuff[5] << 8) | myTransfer.packet.txBuff[4]));
+    pDBG(F("img.sizeLastLoop: ")); pDBGln((uint16_t)((myTransfer.packet.txBuff[7] << 8) | myTransfer.packet.txBuff[6]));
+
+    startIndex += PIXELS_PER_packet;    
+    delay(100);
+  }
+  esp_camera_fb_return(fb);
+  delay(10000);
+}
   
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
   Serial.begin(115200);
-  //pinMode(13, INPUT_PULLUP);
+  Comm.begin(962100, SERIAL_8N1,15,14);     //, Comm_Txd_pin, Comm_Rxd_pin // Define and start Comm serial port
+  myTransfer.begin(Comm);
  
   Serial.setDebugOutput(true);
  
@@ -82,19 +158,9 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-  //pinMode(4, OUTPUT);
-  //digitalWrite(4, LOW);
-  //rtc_gpio_hold_dis(GPIO_NUM_4);
- 
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_VGA; // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
+  config.frame_size = FRAMESIZE_VGA; // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
+  config.jpeg_quality = 10;
+  config.fb_count = 2;
  
   // Init Camera
   esp_err_t err = esp_camera_init(&config);
@@ -109,21 +175,7 @@ void setup() {
   s->set_brightness(s, 2);  //min=-2, max=2
   s->set_saturation(s, 2);  //min=-2, max=2
   delay(100);               //wait a little for settings to take effect
- 
-  Serial.println("Starting SD Card");
- 
-  delay(500);
-  if(!SD_MMC.begin()){
-    Serial.println("SD Card Mount Failed");
-    //return;
-  }
- 
-  uint8_t cardType = SD_MMC.cardType();
-  if(cardType == CARD_NONE){
-    Serial.println("No SD Card attached");
-    //return;
-  }
-   
+    
   camera_fb_t * fb = NULL;
  
   // Take Picture with Camera
@@ -134,31 +186,8 @@ void setup() {
     while(1);   //wait here as something is not right
   }
   // initialize EEPROM with predefined size
-  EEPROM.begin(EEPROM_SIZE);
-  pictureNumber = EEPROM.read(0) + 1;
- 
-  // Path where new picture will be saved in SD Card
-  String path = "/picture" + String(pictureNumber) +".jpg";
- 
-  fs::FS &fs = SD_MMC;
-  Serial.printf("Picture file name: %s\n", path.c_str());
- //create new file
-  File file = fs.open(path.c_str(), FILE_WRITE);
-  if(!file){
-    Serial.println("Failed to open file in writing mode");
-    //Serial.println("Exiting now"); 
-    //while(1);   //wait here as something is not right
-  }
-  else {
-    file.write(fb->buf, fb->len); // payload (image), payload length
-    Serial.printf("Saved file to path: %s\n", path.c_str());
-    EEPROM.write(0, pictureNumber);
-    EEPROM.commit();
-  }
-  file.close();
-  esp_camera_fb_return(fb);
+  sendPicture(fb);
   
-  delay(1000);
   
   // Turns off the ESP32-CAM white on-board LED (flash) connected to GPIO 4
   pinMode(4, OUTPUT);  //GPIO for LED flash
