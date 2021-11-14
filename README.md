@@ -20,7 +20,7 @@ The framework is based on IOTForce stack:
 
 ## Architecture:
 -------------------
-![schematics](https://github.com/krukmat/PetFeeder/blob/fc20316cbeb6c70a58e8dfbb0077d1ce6ff9302a/FinalDiagram.png)
+![schematics](https://github.com/krukmat/AlarmForceV2/blob/13996cf1386968c80bb872887f8aa3ef04c6e002/images/FinalDiagram.png)
 ## Dependencies:
 ----------------------
        * IOTForce MQTT Library: 
